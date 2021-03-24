@@ -13,4 +13,3 @@ cd ..
 zip -g jwt_auth.zip jwt_authorizer.py login.py test_method.py
 aws s3 cp ./jwt_apigw_cfn.yaml s3://${S3_BUCKET}/jwt_apigw_cfn.yaml
 aws s3 cp ./jwt_auth.zip s3://${S3_BUCKET}/jwt_auth.zip
-aws cloudformation update-stack --region us-east-1 --stack-name amh-jwt --template-url https://s3.amazonaws.com/tc-jwt-apigateway-auth/jwt_apigw_cfn.yaml --capabilities CAPABILITY_NAMED_IAM

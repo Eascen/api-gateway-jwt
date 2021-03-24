@@ -6,8 +6,6 @@ import jwt
 import json
 from datetime import datetime, timedelta
 
-logger = logging.getLogger("login")
-logger.setLevel(os.environ["LOG_LEVEL"])
 KMS_KEY_ID=os.environ["KMS_KEY"]
 
 kms_client = boto3.client("kms")
@@ -38,7 +36,7 @@ def lambda_handler(event, context):
         headers={"KID": ciphertextKey})
         return {
             "statusCode": 200,
-            "JWT_Token": encodedJwt.decode('utf-8')
+            "headers": {"JWT_Token": encodedJwt}            
         }
 
     return {

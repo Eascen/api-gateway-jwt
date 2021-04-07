@@ -1,0 +1,275 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: My API Gateway and Lambda function w JWT Authorizer
+
+Parameters:
+  APIGatewayName:
+    Type: String
+    Default: my-api
+  APIGatewayStageName:
+    Type: String
+    AllowedPattern: "[a-z0-9]+"
+    Default: main
+  S3BucketName:
+    Type: String
+    Default: tc-jwt-apigateway-auth
+
+Resources:
+  JWTKMSKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: Symmetric CMK for JWT
+      KeyPolicy:
+        Version: '2012-10-17'
+        Id: state1
+        Statement:
+        - Sid: Enable IAM User Permissions
+          Effect: Allow
+          Principal:
+            AWS: !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+          Action: kms:*
+          Resource: '*'
+        - Sid: Allow use of the key
+          Effect: Allow
+          Principal:
+            AWS: 
+              - !GetAtt JWTLambdaIAMRole.Arn
+              - !GetAtt LoginLambdaIAMRole.Arn
+          Action:
+          - kms:Encrypt
+          - kms:Decrypt
+          - kms:GenerateDataKey
+          - kms:GenerateDataKeyWithoutPlaintext
+          Resource: '*'
+
+  APIGateway:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Description: Example API Gateway
+      EndpointConfiguration:
+        Types:
+          - REGIONAL
+      Name: !Ref APIGatewayName
+
+  APIGatewayRootMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      AuthorizationType: "CUSTOM"
+      HttpMethod: "GET"
+      ResourceId: !GetAtt APIGateway.RootResourceId
+      RestApiId: !Ref APIGateway
+      AuthorizerId: !Ref Authorizer
+      Integration: 
+        IntegrationHttpMethod: POST
+        Type: "AWS_PROXY"
+        Uri: !Sub
+          - arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${lambdaArn}/invocations
+          - lambdaArn: !GetAtt TestLambdaFunction.Arn
+
+  APIGatewayDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+      - APIGatewayRootMethod
+    Properties:
+      RestApiId: !Ref APIGateway
+      StageName: !Ref APIGatewayStageName
+
+  LoginResource:
+    Type: "AWS::ApiGateway::Resource"
+    Properties: 
+      ParentId: !GetAtt APIGateway.RootResourceId
+      PathPart: 'login'
+      RestApiId: !Ref APIGateway
+
+  LoginMethod:
+    Type: 'AWS::ApiGateway::Method'
+    Properties:
+      RestApiId: !Ref APIGateway
+      ResourceId: !Ref LoginResource
+      HttpMethod: POST
+      AuthorizationType: "NONE"
+      Integration: 
+        IntegrationHttpMethod: POST
+        Type: "AWS_PROXY"
+        Uri: !Sub
+          - arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${lambdaArn}/invocations
+          - lambdaArn: !GetAtt LoginLambdaFunction.Arn
+
+  Authorizer:
+    Type: 'AWS::ApiGateway::Authorizer'
+    Properties:
+      AuthorizerResultTtlInSeconds: '300'
+      AuthorizerUri: !Join 
+        - ''
+        - - 'arn:aws:apigateway:'
+          - !Ref 'AWS::Region'
+          - ':lambda:path/2015-03-31/functions/'
+          - !GetAtt 
+            - JWTAuthorizerLambdaFunction
+            - Arn
+          - /invocations
+      Type: TOKEN
+      IdentitySource: method.request.header.Auth
+      Name: JWTAuthorizer
+      RestApiId: !Ref APIGateway
+
+  JWTAuthorizerLambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Code:
+        S3Bucket: !Ref S3BucketName
+        S3Key: jwt_auth.zip
+      Description: "JWT Lambda"
+      FunctionName: !Sub "${AWS::StackName}-jwt-lambda"
+      Handler: jwt_authorizer.lambda_handler
+      MemorySize: 128
+      Role: !GetAtt JWTLambdaIAMRole.Arn
+      Runtime: python3.8
+      Environment:
+        Variables:
+          KMS_KEY: !GetAtt JWTKMSKey.Arn
+
+  LoginLambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Code:
+        S3Bucket: !Ref S3BucketName
+        S3Key: jwt_auth.zip
+      Description: "Test lambda function for Authorizer"
+      FunctionName: !Sub "${AWS::StackName}-login-lambda"
+      Handler: login.lambda_handler
+      MemorySize: 128
+      Role: !GetAtt LoginLambdaIAMRole.Arn
+      Runtime: python3.8
+      Environment:
+        Variables:
+          KMS_KEY: !GetAtt JWTKMSKey.Arn
+
+  TestLambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Code:
+        S3Bucket: !Ref S3BucketName
+        S3Key: jwt_auth.zip
+      Description: "Test lambda function for Authorizer"
+      FunctionName: !Sub "${AWS::StackName}-test-lambda"
+      Handler: test_method.lambda_handler
+      MemorySize: 128
+      Role: !GetAtt TestLambdaIAMRole.Arn
+      Runtime: python3.8
+  
+  JWTLambdaApiGatewayInvoke:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt JWTAuthorizerLambdaFunction.Arn
+      Principal: apigateway.amazonaws.com
+
+  LoginLambdaApiGatewayInvoke:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt LoginLambdaFunction.Arn
+      Principal: apigateway.amazonaws.com
+
+  TestLambdaApiGatewayInvoke:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt TestLambdaFunction.Arn
+      Principal: apigateway.amazonaws.com
+
+  JWTLambdaIAMRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Action:
+              - sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+      Policies:
+        - PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Effect: Allow
+                Resource:
+                  - !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${AWS::StackName}-jwt-lambda:*
+          PolicyName: lambda
+
+  LoginLambdaIAMRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Action:
+              - sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+      Policies:
+        - PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Effect: Allow
+                Resource:
+                  - !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${AWS::StackName}-login-lambda:*
+          PolicyName: lambda
+
+  TestLambdaIAMRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Action:
+              - sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+      Policies:
+        - PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Effect: Allow
+                Resource:
+                  - !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${AWS::StackName}-test-lambda:*
+          PolicyName: lambda
+
+  JWTLambdaLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${AWS::StackName}-jwt-lambda
+      RetentionInDays: 90
+  LoginLambdaLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${AWS::StackName}-login-lambda
+      RetentionInDays: 90  
+  TestLambdaLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${AWS::StackName}-test-lambda
+      RetentionInDays: 90
+
+    
+Outputs:
+  APIGatewayURL:
+    Value: !Sub https://${APIGateway}.execute-api.${AWS::Region}.amazonaws.com/${APIGatewayStageName}
